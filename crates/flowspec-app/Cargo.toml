@@ -1,0 +1,27 @@
+[package]
+name = "flowspec-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+flowspec-domain = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+schemars = { workspace = true, optional = true }
+time = { workspace = true }
+
+[features]
+test-fakes = []
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tokio = { workspace = true }
+flowspec-app = { path = ".", features = ["test-fakes"] }

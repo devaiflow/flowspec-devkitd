@@ -1,0 +1,46 @@
+flow:
+  name: devkit-chain
+  version: 1.0.0
+  description: >
+    Live devkitd chain: provisions a real worktree + containers via devkitd's
+    create-feature/containers-up plugins, then runs two coding agents in
+    sequence (opencode, then claude) against that worktree. Deliberately has
+    no clean-feature teardown — the worktree, its containers, and the agents'
+    artifacts are left in place for inspection.
+
+  lifecycle:
+    before_run:
+      - hook: create-feature
+        timeout: 15m
+        args:
+          project: pro-rails
+          feature: feat-testing-x
+      - hook: containers-up
+        timeout: 15m
+        args:
+          project: pro-rails
+          feature: feat-testing-x
+
+  steps:
+    - id: summary
+      type: cli
+      timeout: 30m
+      with:
+        cli: opencode
+        input: "write a summary.md file with a small description of the project"
+        mount: "/workspaces/projects/pro-rails/feat-testing-x:/workspaces/projects/pro-rails/feat-testing-x:rw"
+        workdir: "/workspaces/projects/pro-rails/feat-testing-x"
+      on_success: blog
+      on_failure: done
+
+    - id: blog
+      type: cli
+      needs: [summary]
+      timeout: 30m
+      with:
+        cli: claude
+        input: "analyze the README.md, summary.md and ARCHITECTURE.md and write blog.md - a blog post about this project"
+        mount: "/workspaces/projects/pro-rails/feat-testing-x:/workspaces/projects/pro-rails/feat-testing-x:rw"
+        workdir: "/workspaces/projects/pro-rails/feat-testing-x"
+      on_success: done
+      on_failure: done

@@ -1,0 +1,30 @@
+flow:
+  name: linear
+  version: 1.0.0
+  description: "Plan then implement, no human loops."
+  inputs:
+    message:
+      type: string
+      required: true
+  steps:
+    - id: plan
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-opus-4-5
+        role: planner
+        input: "{{ inputs.message }}"
+        output: PLAN.md
+      on_success: implement
+
+    - id: implement
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: engineer
+        input: "{{ steps.plan.output }}"
+        output: worktree
+      on_success: done

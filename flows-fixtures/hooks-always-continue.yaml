@@ -1,0 +1,25 @@
+flow:
+  name: hooks-always-continue
+  version: 1.0.0
+  description: "before_run hook fails but always_continue=true -> run continues to entry step."
+  inputs:
+    message:
+      type: string
+      required: true
+  lifecycle:
+    before_run:
+      - hook: gate
+        always_continue: true
+        args:
+          stage: before_run
+  steps:
+    - id: build
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: builder
+        input: "{{ inputs.message }}"
+      on_success: done
+      on_failure: done

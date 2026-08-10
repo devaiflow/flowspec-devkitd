@@ -1,0 +1,24 @@
+flow:
+  name: deploy-to-environment
+  version: 1.0.0
+  inputs:
+    environment:
+      type: string
+      required: true
+    artifact:
+      type: string
+      required: true
+  outputs:
+    deployment_id: "{{ steps.deploy.output.id }}"
+    deployed_url: "{{ steps.deploy.output.url }}"
+  steps:
+    - id: deploy
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: deployer
+        input: "Deploy {{ inputs.artifact }} to {{ inputs.environment }}"
+      on_success: done
+      on_failure: done

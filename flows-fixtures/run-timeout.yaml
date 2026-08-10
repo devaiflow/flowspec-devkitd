@@ -1,0 +1,16 @@
+flow:
+  name: run-timeout
+  version: 1.0.0
+  description: "Run with a very short timeout that fires mid-step."
+  timeout: 1s
+  steps:
+    - id: hang
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: sleeper
+        input: "Hang forever"
+      on_success: done
+      on_failure: done

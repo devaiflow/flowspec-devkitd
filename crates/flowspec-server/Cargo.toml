@@ -1,0 +1,41 @@
+[package]
+name = "flowspec-server"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "flowspec_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flowspec-server"
+path = "src/main.rs"
+
+[dependencies]
+flowspec-domain = { workspace = true }
+flowspec-app = { workspace = true, features = ["schema"] }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+figment = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_yaml_ng = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+test-fakes = []
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tempfile = "3"
+insta = { workspace = true }
+flowspec-app = { workspace = true, features = ["test-fakes"] }
+flowspec-server = { path = ".", features = ["test-fakes"] }

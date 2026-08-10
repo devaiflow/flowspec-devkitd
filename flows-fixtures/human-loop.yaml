@@ -1,0 +1,32 @@
+flow:
+  name: human-loop
+  version: 1.0.0
+  description: "A plan step gated by human approval, rejection re-runs with feedback."
+  inputs:
+    message:
+      type: string
+      required: true
+  steps:
+    - id: plan
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-opus-4-5
+        role: planner
+        input: "{{ inputs.message }}"
+        output: PLAN.md
+      human_loop: true
+      on_approve: implement
+      on_reject: plan
+
+    - id: implement
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: engineer
+        input: "{{ steps.plan.output }}"
+        output: worktree
+      on_success: done

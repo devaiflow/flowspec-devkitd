@@ -1,0 +1,9 @@
+flow:
+  name: unknown-field
+  version: 1.0.0
+  steps:
+    - id: a
+      type: cli
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: r, input: "a" }
+      on_success: done
+      totally_not_a_real_field: true

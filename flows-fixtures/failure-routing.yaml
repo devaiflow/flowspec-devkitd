@@ -1,0 +1,28 @@
+flow:
+  name: failure-routing
+  version: 1.0.0
+  description: "test fails route back to implement; implement retries twice before giving up."
+  steps:
+    - id: implement
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: engineer
+        input: "Implement the feature"
+      retries: 2
+      on_success: test
+      on_failure: done
+
+    - id: test
+      type: cli
+      needs: [implement]
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: test_runner
+        input: "Run the test suite"
+      on_success: done
+      on_failure: implement

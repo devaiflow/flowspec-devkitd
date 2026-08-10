@@ -1,0 +1,630 @@
+---
+source: crates/flowspec-server/tests/mcp_tools.rs
+expression: summary
+---
+- description: "Approve a step that is waiting for human review, letting the run continue. Find waiting steps with pending_approvals. Only steps in waiting_approval status can be approved; step_id is optional when exactly one step on the run is waiting."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      comment:
+        description: Optional note recorded alongside the approval.
+        type:
+          - string
+          - "null"
+      run_id:
+        description: Id of the run whose step should be approved.
+        type: string
+      step_id:
+        description: "Which step to approve. Optional when exactly one step on the run is\nwaiting_approval; required (and validated against the actual waiting\nstep) when more than one is waiting. Find candidates with\npending_approvals."
+        type:
+          - string
+          - "null"
+    required:
+      - run_id
+    type: object
+  name: approve_step
+  output_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      run_id:
+        type: string
+      step_id:
+        type: string
+    required:
+      - run_id
+      - step_id
+    type: object
+- description: Cancel a run. Any in-flight step is stopped and the run moves to a terminal cancelled phase; already-completed steps are unaffected.
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      run_id:
+        description: "Id of the run to cancel, as returned by start_flow or list_runs."
+        type: string
+    required:
+      - run_id
+    type: object
+  name: cancel_run
+  output_schema:
+    $defs:
+      Timestamp:
+        description: "RFC3339 timestamp, e.g. \"2026-08-08T12:00:00Z\"."
+        format: date-time
+        type: string
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      active_steps:
+        items:
+          type: string
+        type: array
+      phase:
+        type: string
+      run_id:
+        type: string
+      updated_at:
+        $ref: "#/$defs/Timestamp"
+    required:
+      - run_id
+      - phase
+      - active_steps
+      - updated_at
+    type: object
+- description: "Get the current status of a run: its phase, which steps are active right now, and a bounded summary of every step (including terminal ones). Output in the summary is truncated to ~500 characters; call get_step_output for the full value."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      run_id:
+        description: "Id of the run to inspect, as returned by start_flow or list_runs."
+        type: string
+    required:
+      - run_id
+    type: object
+  name: get_run_status
+  output_schema:
+    $defs:
+      ActiveStepInfo:
+        properties:
+          last_poll_ago_secs:
+            description: "Seconds since the last confirmed liveness poll from devkitd, if the\nstep is currently executing."
+            format: uint64
+            minimum: 0
+            type:
+              - integer
+              - "null"
+          status:
+            type: string
+          step_id:
+            type: string
+        required:
+          - step_id
+          - status
+        type: object
+      HookInfo:
+        description: "One executed hook (`before_run`, `after_run`, or a step's `after_step`).\nSteps and hooks run through the same devkitd job interface, so a failure\nhere carries the same shape as a step's: `failure_summary` truncated like\nevery other status-response field, `failure` structured with exit code,\nstdout, and stderr."
+        properties:
+          completed_at:
+            anyOf:
+              - $ref: "#/$defs/Timestamp"
+              - type: "null"
+          failure:
+            anyOf:
+              - $ref: "#/$defs/JobFailure"
+              - type: "null"
+          failure_summary:
+            anyOf:
+              - $ref: "#/$defs/OutputSummary"
+              - type: "null"
+          hook:
+            type: string
+          job_id:
+            type:
+              - string
+              - "null"
+          phase:
+            description: before_run | after_run | after_step
+            type: string
+          started_at:
+            $ref: "#/$defs/Timestamp"
+          status:
+            description: completed | failed | skipped
+            type: string
+        required:
+          - hook
+          - phase
+          - status
+          - started_at
+        type: object
+      JobFailure:
+        description: "Structured failure detail for a step or hook job, shared by both --\nsteps and hooks execute through the same devkitd job interface (see\n`Devkitd` in `ports.rs`), and a caller triaging a failure needs the same\nthree facts (exit code, stdout, stderr) regardless of which one failed.\n`failure_reason`/`failure_summary` fields elsewhere stay the flattened,\nhuman-readable line; this is its machine-readable sibling."
+        properties:
+          exit_code:
+            description: "Only present for `tool_error`."
+            format: int32
+            type:
+              - integer
+              - "null"
+          kind:
+            description: tool_error | timeout | interrupted | cancelled | unreachable
+            type: string
+          stderr:
+            type:
+              - string
+              - "null"
+          stdout:
+            type:
+              - string
+              - "null"
+        required:
+          - kind
+        type: object
+      OutputSummary:
+        description: "A size-bounded preview of a step's output, for status responses that must\nnever risk poisoning the host's context with megabytes of JSON. Full\ncontent is available via `get_step_output`."
+        properties:
+          bytes:
+            description: "Size of the full (untruncated) output, in bytes."
+            format: uint
+            minimum: 0
+            type: integer
+          text:
+            description: "The output, rendered as text and truncated to the summary budget."
+            type: string
+          truncated:
+            description: "Whether `text` was truncated. When true, call `get_step_output` for\nthe complete value."
+            type: boolean
+        required:
+          - text
+          - bytes
+          - truncated
+        type: object
+      StepInfo:
+        properties:
+          attempt:
+            format: uint32
+            minimum: 0
+            type: integer
+          completed_at:
+            anyOf:
+              - $ref: "#/$defs/Timestamp"
+              - type: "null"
+          failed_in:
+            description: "Set only when `status` is `failed`: \"step\" when the step's own job\nfailed, \"after_hook\" when one of its `after:` hooks failed instead\n(`hooks` below names which one). Distinguishes \"the agent failed\"\nfrom \"the agent succeeded but its follow-up hook didn't\"."
+            type:
+              - string
+              - "null"
+          failure:
+            anyOf:
+              - $ref: "#/$defs/JobFailure"
+              - type: "null"
+            description: "Structured sibling of `failure_reason`: exit code, stdout, stderr."
+          failure_reason:
+            type:
+              - string
+              - "null"
+          feedback:
+            type:
+              - string
+              - "null"
+          hooks:
+            description: "This step's `after:` hook executions."
+            items:
+              $ref: "#/$defs/HookInfo"
+            type: array
+          last_poll_ago_secs:
+            format: uint64
+            minimum: 0
+            type:
+              - integer
+              - "null"
+          output_summary:
+            anyOf:
+              - $ref: "#/$defs/OutputSummary"
+              - type: "null"
+          started_at:
+            anyOf:
+              - $ref: "#/$defs/Timestamp"
+              - type: "null"
+          status:
+            type: string
+          step_id:
+            type: string
+        required:
+          - step_id
+          - status
+          - attempt
+          - hooks
+        type: object
+      Timestamp:
+        description: "RFC3339 timestamp, e.g. \"2026-08-08T12:00:00Z\"."
+        format: date-time
+        type: string
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      active_steps:
+        description: "Steps currently pending, running, or waiting on approval/subflow."
+        items:
+          $ref: "#/$defs/ActiveStepInfo"
+        type: array
+      created_at:
+        $ref: "#/$defs/Timestamp"
+      flow_name:
+        type: string
+      flow_version:
+        type: string
+      phase:
+        type: string
+      run_hooks:
+        description: "This run's `before_run`/`after_run` lifecycle hooks. Check this when\n`phase` is `failed` but `steps` is empty or shows no failure -- a\ngating hook aborted the run before (or after) any step ran."
+        items:
+          $ref: "#/$defs/HookInfo"
+        type: array
+      run_id:
+        type: string
+      steps:
+        description: "Every step in the run's latest attempt, including terminal ones.\nOutput is a size-bounded summary; call get_step_output for the full\nvalue."
+        items:
+          $ref: "#/$defs/StepInfo"
+        type: array
+      updated_at:
+        $ref: "#/$defs/Timestamp"
+    required:
+      - run_id
+      - flow_name
+      - flow_version
+      - phase
+      - active_steps
+      - steps
+      - run_hooks
+      - created_at
+      - updated_at
+    type: object
+- description: "Get the parent/child hierarchy of subflow runs dispatched from a run, recursively. Useful for tracing a run that fans out into subflows."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      run_id:
+        description: "Id of the run to inspect. Returns the run and every subflow it\ndispatched, recursively."
+        type: string
+    required:
+      - run_id
+    type: object
+  name: get_run_tree
+  output_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      children:
+        items:
+          $ref: "#"
+        type: array
+      flow_name:
+        type: string
+      flow_version:
+        type: string
+      phase:
+        type: string
+      run_id:
+        type: string
+    required:
+      - run_id
+      - flow_name
+      - flow_version
+      - phase
+      - children
+    type: object
+- description: "Get the full, untruncated output of one step attempt. Use this after get_run_status shows a truncated output_summary, or to inspect an older attempt after a rejection. Omit attempt for the latest one."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      attempt:
+        description: Which attempt to fetch. Omit for the latest attempt.
+        format: uint32
+        minimum: 0
+        type:
+          - integer
+          - "null"
+      run_id:
+        description: Id of the run the step belongs to.
+        type: string
+      step_id:
+        description: "Id of the step, as seen in get_run_status's steps list."
+        type: string
+    required:
+      - run_id
+      - step_id
+    type: object
+  name: get_step_output
+  output_schema:
+    $defs:
+      JobFailure:
+        description: "Structured failure detail for a step or hook job, shared by both --\nsteps and hooks execute through the same devkitd job interface (see\n`Devkitd` in `ports.rs`), and a caller triaging a failure needs the same\nthree facts (exit code, stdout, stderr) regardless of which one failed.\n`failure_reason`/`failure_summary` fields elsewhere stay the flattened,\nhuman-readable line; this is its machine-readable sibling."
+        properties:
+          exit_code:
+            description: "Only present for `tool_error`."
+            format: int32
+            type:
+              - integer
+              - "null"
+          kind:
+            description: tool_error | timeout | interrupted | cancelled | unreachable
+            type: string
+          stderr:
+            type:
+              - string
+              - "null"
+          stdout:
+            type:
+              - string
+              - "null"
+        required:
+          - kind
+        type: object
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      attempt:
+        format: uint32
+        minimum: 0
+        type: integer
+      failure:
+        anyOf:
+          - $ref: "#/$defs/JobFailure"
+          - type: "null"
+        description: "Structured sibling of `failure_reason`: exit code, stdout, stderr."
+      failure_reason:
+        type:
+          - string
+          - "null"
+      feedback:
+        type:
+          - string
+          - "null"
+      output:
+        description: "Full, untruncated output for this attempt."
+      run_id:
+        type: string
+      status:
+        type: string
+      step_id:
+        type: string
+    required:
+      - run_id
+      - step_id
+      - attempt
+      - status
+    type: object
+- description: "List every available flow, with the version that will run by default and its declared inputs (name, type, required, default, description). Call this before start_flow to see what inputs a flow needs."
+  input_schema:
+    properties: {}
+    type: object
+  name: list_flows
+  output_schema:
+    $defs:
+      FlowInputSummary:
+        properties:
+          default: true
+          description:
+            type:
+              - string
+              - "null"
+          name:
+            type: string
+          required:
+            type: boolean
+          type:
+            type: string
+        required:
+          - name
+          - type
+          - required
+        type: object
+      FlowSummary:
+        properties:
+          description:
+            type:
+              - string
+              - "null"
+          inputs:
+            items:
+              $ref: "#/$defs/FlowInputSummary"
+            type: array
+          name:
+            type: string
+          version:
+            type: string
+        required:
+          - name
+          - version
+          - inputs
+        type: object
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      flows:
+        items:
+          $ref: "#/$defs/FlowSummary"
+        type: array
+    required:
+      - flows
+    type: object
+- description: "List runs, newest first, optionally filtered by flow_name and/or phase (one of: running, completed, failed, cancelled). Use limit to bound the result."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      flow_name:
+        type:
+          - string
+          - "null"
+      limit:
+        description: "Maximum number of runs to return, newest first."
+        format: uint
+        minimum: 0
+        type:
+          - integer
+          - "null"
+      phase:
+        description: "One of: running, completed, failed, cancelled."
+        type:
+          - string
+          - "null"
+    type: object
+  name: list_runs
+  output_schema:
+    $defs:
+      RunSummaryView:
+        properties:
+          created_at:
+            $ref: "#/$defs/Timestamp"
+          flow_name:
+            type: string
+          flow_version:
+            type: string
+          phase:
+            type: string
+          run_id:
+            type: string
+          updated_at:
+            $ref: "#/$defs/Timestamp"
+        required:
+          - run_id
+          - flow_name
+          - flow_version
+          - phase
+          - created_at
+          - updated_at
+        type: object
+      Timestamp:
+        description: "RFC3339 timestamp, e.g. \"2026-08-08T12:00:00Z\"."
+        format: date-time
+        type: string
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      runs:
+        items:
+          $ref: "#/$defs/RunSummaryView"
+        type: array
+    required:
+      - runs
+    type: object
+- description: "List steps currently waiting for human approval, across all runs or (with run_id) a single run. Each entry includes the step's output for review. Use approve_step or reject_step to act on one."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      run_id:
+        description: "Restrict results to a single run. Omit to see waiting steps across\nall runs."
+        type:
+          - string
+          - "null"
+    type: object
+  name: pending_approvals
+  output_schema:
+    $defs:
+      PendingApproval:
+        properties:
+          output:
+            description: "The step's output, for review before approving or rejecting."
+          run_id:
+            type: string
+          step_id:
+            type: string
+        required:
+          - run_id
+          - step_id
+        type: object
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      pending:
+        items:
+          $ref: "#/$defs/PendingApproval"
+        type: array
+    required:
+      - pending
+    type: object
+- description: "Liveness check. Always replies 'pong'."
+  input_schema:
+    properties: {}
+    type: object
+  name: ping
+  output_schema: ~
+- description: "Reject a step that is waiting for human review, sending it back with feedback for another attempt. Find waiting steps with pending_approvals. The feedback text is handed to the agent verbatim, so be specific about what to change."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      feedback:
+        description: "Actionable feedback explaining why the step was rejected. This text\nis handed back to the agent verbatim, so be specific about what to\nchange."
+        type: string
+      run_id:
+        description: Id of the run whose step should be rejected.
+        type: string
+      step_id:
+        description: "Which step to reject. Optional when exactly one step on the run is\nwaiting_approval; required when more than one is waiting."
+        type:
+          - string
+          - "null"
+    required:
+      - run_id
+      - feedback
+    type: object
+  name: reject_step
+  output_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      run_id:
+        type: string
+      step_id:
+        type: string
+    required:
+      - run_id
+      - step_id
+    type: object
+- description: "Start a run of a flow and return immediately with its run_id; the flow keeps executing in the background. Always send an idempotency_key: if this exact key was used before, the existing run is returned instead of starting a duplicate. Poll get_run_status or pending_approvals to follow progress."
+  input_schema:
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      flow_name:
+        description: "Name of the flow to start, as returned by list_flows."
+        type: string
+      idempotency_key:
+        description: "A key unique to this logical request. If a run with this key already\nexists, start_flow returns that run instead of creating a new one.\nHosts that may retry or double-fire tool calls should always send\none."
+        type:
+          - string
+          - "null"
+      inputs:
+        description: "Values for the flow's declared inputs. Required inputs (see\nlist_flows) must be present and non-null."
+      trigger:
+        description: "Free-form context about what triggered this run (e.g. who asked, or\nwhich chat message). Stored with the run, not interpreted."
+      version_req:
+        description: "Optional semver requirement (e.g. \">=1.2.0\"). Defaults to the highest\navailable version."
+        type:
+          - string
+          - "null"
+    required:
+      - flow_name
+      - inputs
+      - trigger
+    type: object
+  name: start_flow
+  output_schema:
+    $defs:
+      Timestamp:
+        description: "RFC3339 timestamp, e.g. \"2026-08-08T12:00:00Z\"."
+        format: date-time
+        type: string
+    $schema: "https://json-schema.org/draft/2020-12/schema"
+    properties:
+      active_steps:
+        items:
+          type: string
+        type: array
+      phase:
+        type: string
+      replayed:
+        description: "True if idempotency_key matched an existing run and no new run was\ncreated."
+        type: boolean
+      run_id:
+        type: string
+      started_at:
+        $ref: "#/$defs/Timestamp"
+    required:
+      - run_id
+      - phase
+      - active_steps
+      - started_at
+      - replayed
+    type: object

@@ -1,0 +1,28 @@
+flow:
+  name: build-and-deploy
+  version: 1.0.0
+  steps:
+    - id: build
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: builder
+        input: "Build the artifact"
+        output: artifact.tar
+      on_success: deploy-staging
+      on_failure: done
+
+    - id: deploy-staging
+      type: subflow
+      needs: [build]
+      with:
+        flow: deploy-to-environment
+        version: "^1.0"
+        inputs:
+          environment: staging
+          artifact: "{{ steps.build.output }}"
+        output: staging-deployment
+      on_success: done
+      on_failure: done

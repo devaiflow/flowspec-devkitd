@@ -1,0 +1,11 @@
+flow:
+  name: self-recursive
+  version: 1.0.0
+  steps:
+    - id: recurse
+      type: subflow
+      with:
+        flow: self-recursive
+        version: "^1.0"
+      on_success: done
+      on_failure: done

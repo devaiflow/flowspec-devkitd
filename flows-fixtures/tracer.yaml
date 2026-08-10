@@ -1,0 +1,45 @@
+flow:
+  name: tracer
+  version: 1.0.0
+  description: >
+    Phase 4 tracer bullet — cheap, repeatable, no agent tokens spent. Exercises
+    a lifecycle hook and a cli step against devkitd's own echo-test plugin
+    (used as both hook and cli tool), proving real wire interop end-to-end:
+    worktree-free job_id persistence, status polling, output decode, and
+    hook gating.
+
+  inputs:
+    message:
+      type: string
+      required: true
+
+  lifecycle:
+    before_run:
+      - hook: echo-test
+        timeout: 30s
+        args:
+          id: before-run
+          message: setup
+    after_run:
+      - hook: echo-test
+        timeout: 30s
+        when: always
+        args:
+          id: after-run
+          message: teardown
+
+  steps:
+    - id: probe
+      type: cli
+      timeout: 60s
+      with:
+        cli: echo-test
+        # `input` is the schema-required field but echo-test's manifest
+        # doesn't map it (devkitd drops unmapped args) — `message` in
+        # `extra` is what the plugin actually reads, so it carries the
+        # value that proves the round trip.
+        input: "{{ inputs.message }}"
+        id: probe
+        message: "{{ inputs.message }}"
+      on_success: done
+      on_failure: done

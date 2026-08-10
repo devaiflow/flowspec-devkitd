@@ -1,0 +1,56 @@
+flow:
+  name: fan-out
+  version: 1.0.0
+  description: "build fans out to three checks, gate needs all three."
+  steps:
+    - id: build
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: builder
+        input: "Build"
+      on_success: [unit-tests, integration-tests, lint]
+      on_failure: report-failure
+
+    - id: unit-tests
+      type: cli
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: tester, input: "Run unit tests" }
+      needs: [build]
+      on_success: gate
+      on_failure: report-failure
+
+    - id: integration-tests
+      type: cli
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: tester, input: "Run integration tests" }
+      needs: [build]
+      on_success: gate
+      on_failure: report-failure
+
+    - id: lint
+      type: cli
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: linter, input: "Run lint" }
+      needs: [build]
+      on_success: gate
+      on_failure: report-failure
+
+    - id: gate
+      type: cli
+      needs: [unit-tests, integration-tests, lint]
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: reviewer
+        input: |
+          Unit:  {{ steps.unit-tests.output }}
+          Integ: {{ steps.integration-tests.output }}
+          Lint:  {{ steps.lint.output }}
+      on_success: done
+
+    - id: report-failure
+      type: cli
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: reporter, input: "Report failure" }
+      needs: [build, unit-tests, integration-tests, lint]
+      on_success: done

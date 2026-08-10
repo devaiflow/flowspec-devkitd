@@ -1,0 +1,24 @@
+flow:
+  name: hooks-gating-failure
+  version: 1.0.0
+  description: "before_run hook fails (without always_continue) -> run fails, entry step never starts."
+  inputs:
+    message:
+      type: string
+      required: true
+  lifecycle:
+    before_run:
+      - hook: gate
+        args:
+          stage: before_run
+  steps:
+    - id: build
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: builder
+        input: "{{ inputs.message }}"
+      on_success: done
+      on_failure: done

@@ -1,0 +1,25 @@
+flow:
+  name: cross-sibling
+  version: 1.0.0
+  steps:
+    - id: build
+      type: cli
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: r, input: "build" }
+      on_success: [branch-a, branch-b]
+
+    - id: branch-a
+      type: cli
+      needs: [build]
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: r, input: "a" }
+      on_success: done
+
+    - id: branch-b
+      type: cli
+      needs: [build]
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: r
+        input: "{{ steps.branch-a.output }}"
+      on_success: done

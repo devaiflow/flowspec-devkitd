@@ -1,0 +1,60 @@
+flow:
+  name: hooks
+  version: 1.0.0
+  description: "Lifecycle hooks: before_run gates entry, per-step after gates routing, after_run gated by when:."
+
+  inputs:
+    message:
+      type: string
+      required: true
+
+  lifecycle:
+    before_run:
+      - hook: audit
+        args:
+          stage: before_run
+    after_run:
+      - hook: notify-success
+        when: succeeded
+        args:
+          stage: after_run_succeeded
+      - hook: notify-failed
+        when: failed
+        args:
+          stage: after_run_failed
+      - hook: notify-cancelled
+        when: cancelled
+        args:
+          stage: after_run_cancelled
+      - hook: notify-always
+        when: always
+        args:
+          stage: after_run_always
+
+  steps:
+    - id: build
+      type: cli
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: builder
+        input: "{{ inputs.message }}"
+      on_success: validate
+      on_failure: done
+      after:
+        - hook: post-build
+          args:
+            stage: after_build
+
+    - id: validate
+      type: cli
+      needs: [build]
+      with:
+        cli: claude-code
+        provider: anthropic
+        model: claude-sonnet-4-5
+        role: tester
+        input: "Run the test suite"
+      on_success: done
+      on_failure: done

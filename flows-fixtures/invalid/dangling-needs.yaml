@@ -1,0 +1,14 @@
+flow:
+  name: dangling-needs
+  version: 1.0.0
+  steps:
+    - id: a
+      type: cli
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: r, input: "a" }
+      on_success: b
+
+    - id: b
+      type: cli
+      needs: [does-not-exist]
+      with: { cli: claude-code, provider: anthropic, model: claude-sonnet-4-5, role: r, input: "b" }
+      on_success: done
