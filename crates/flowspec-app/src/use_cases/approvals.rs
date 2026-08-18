@@ -1,8 +1,9 @@
-use crate::ports::{RunId, StateStore, StoreError};
+use crate::ports::{Mutation, RunEventRecord, RunEventType, RunId, StateStore, StoreError};
 use crate::scheduler::Scheduler;
 use flowspec_domain::run::types::{Event, StepStatus};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 #[cfg(feature = "schema")]
 use schemars::JsonSchema;
@@ -60,7 +61,18 @@ pub async fn approve_step(
     req: ApproveRequest,
 ) -> Result<ApprovalResponse, ApprovalError> {
     let run_id = req.run_id;
-    let step_id = resolve_step_id(store, &run_id, req.step_id).await?;
+    let step_id = resolve_step_id(store.clone(), &run_id, req.step_id).await?;
+    let _ = store
+        .apply(
+            &run_id,
+            vec![Mutation::AppendEvent(RunEventRecord {
+                event_type: RunEventType::ApprovalResolved,
+                step_id: Some(step_id.clone()),
+                timestamp: SystemTime::now(),
+                payload: serde_json::json!({ "decision": "approved", "comment": req.comment.clone() }),
+            })],
+        )
+        .await;
     scheduler
         .submit(
             run_id.clone(),
@@ -79,7 +91,18 @@ pub async fn reject_step(
     req: RejectRequest,
 ) -> Result<ApprovalResponse, ApprovalError> {
     let run_id = req.run_id;
-    let step_id = resolve_step_id(store, &run_id, req.step_id).await?;
+    let step_id = resolve_step_id(store.clone(), &run_id, req.step_id).await?;
+    let _ = store
+        .apply(
+            &run_id,
+            vec![Mutation::AppendEvent(RunEventRecord {
+                event_type: RunEventType::ApprovalResolved,
+                step_id: Some(step_id.clone()),
+                timestamp: SystemTime::now(),
+                payload: serde_json::json!({ "decision": "rejected", "feedback": req.feedback.clone() }),
+            })],
+        )
+        .await;
     scheduler
         .submit(
             run_id.clone(),

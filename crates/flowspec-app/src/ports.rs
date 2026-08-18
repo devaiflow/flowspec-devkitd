@@ -153,6 +153,47 @@ pub struct HookRunRecord {
     pub job_id: Option<String>,
 }
 
+/// Event types pushed to the platform's run-event log. Mirrors the
+/// platform's `RunEventTypeSchema` (`src/lib/run-schemas.ts`) exactly, so a
+/// typo can't reach the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunEventType {
+    RunStarted,
+    StepActivated,
+    StepStarted,
+    StepStreamDelta,
+    StepCompleted,
+    StepFailed,
+    StepWaitingApproval,
+    StepWaitingOnSubflow,
+    ApprovalResolved,
+    RunCompleted,
+    RunFailed,
+    RunCancelled,
+}
+
+/// A single outbox entry for the run-event log. `sequence` is deliberately
+/// absent here -- the store assigns it (`MAX(sequence)+1` per run) inside
+/// the same transaction the mutation batch commits in.
+#[derive(Debug, Clone)]
+pub struct RunEventRecord {
+    pub event_type: RunEventType,
+    pub step_id: Option<String>,
+    pub timestamp: SystemTime,
+    pub payload: Value,
+}
+
+/// A store-assigned, persisted run event ready to push to the platform.
+#[derive(Debug, Clone)]
+pub struct StoredRunEvent {
+    pub sequence: u64,
+    pub event_type: RunEventType,
+    pub step_id: Option<String>,
+    pub timestamp: SystemTime,
+    pub payload: Value,
+}
+
 /// A single batched write to a run. Applied atomically by the store.
 #[derive(Debug, Clone)]
 pub enum Mutation {
@@ -205,6 +246,7 @@ pub enum Mutation {
     SetRunPhase(RunPhase),
     SetRunCancelled,
     RecordHookRun(HookRunRecord),
+    AppendEvent(RunEventRecord),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -243,6 +285,21 @@ pub trait StateStore: Send + Sync {
     /// Every hook execution recorded for a run, in execution order. Empty
     /// (not an error) for a run whose lifecycle declares no hooks.
     async fn list_hook_runs(&self, run_id: &str) -> Result<Vec<HookRunRecord>, StoreError>;
+
+    /// Up to `limit` events not yet marked pushed, across all runs, oldest
+    /// first per run. Used by the platform connector's pump loop.
+    async fn unpushed_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(RunId, StoredRunEvent)>, StoreError>;
+
+    /// Marks every event for `run_id` with `sequence <= through_sequence` as
+    /// pushed. Idempotent -- re-marking already-pushed events is a no-op.
+    async fn mark_events_pushed(
+        &self,
+        run_id: &str,
+        through_sequence: u64,
+    ) -> Result<(), StoreError>;
 }
 
 /// Configuration for the scheduler: timeouts, polling, and executor binding.

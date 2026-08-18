@@ -200,7 +200,6 @@ Uploading is devkitd's side (an `artifact-upload` plugin/hook targeting MinIO or
 ## Explicitly out of scope (cut, with the seam preserved)
 
 - devkitd internals (process supervision, plugin registry, group-kill, server-side timeouts) — devkitd's repo, not this one. flowspec sees only MCP tools.
-- Platform event queue and pump — the audit trail is the StateStore. Seam: all mutations already pass through the store's transaction boundary, so event enqueueing later is additive.
 - FlowSpec HTTP inbound interface — a future second inbound adapter over the same use cases.
 - Streaming step *output* — progress notifications carry liveness, not content; stdout arrives only with the final result. Incremental output capture would require a devkitd contract change plus a new adapter, which the port permits.
 - Git/hub flow sources, cross-runtime subflows, second MCP transport, migration tooling.

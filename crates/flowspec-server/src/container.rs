@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::devkitd::{DevkitdClient, DevkitdClientConfig};
 use crate::flows::FsFlowSource;
+use crate::platform::PlatformClient;
 use crate::state::SqliteStore;
 use flowspec_app::ports::{Devkitd, FlowSource, SchedulerConfig, StateStore};
 use flowspec_app::scheduler::Scheduler;
@@ -18,6 +19,9 @@ pub struct Container {
     pub flow_source: Arc<dyn FlowSource>,
     pub scheduler: Arc<Scheduler>,
     pub scheduler_config: SchedulerConfig,
+    /// `None` when `config.platform` is absent -- the connector is fully
+    /// disabled and nothing changes for a pure-OpenClaw deployment.
+    pub platform_client: Option<Arc<PlatformClient>>,
 }
 
 impl Container {
@@ -25,7 +29,10 @@ impl Container {
         let state_store: Arc<dyn StateStore> = Arc::new(SqliteStore::open(&config.db_path)?);
 
         let mut devkitd_config = DevkitdClientConfig::new(config.devkitd_url.clone());
-        devkitd_config.auth_token = config.devkitd_auth_token.clone();
+        devkitd_config.auth_token = config
+            .devkitd_auth_token
+            .as_ref()
+            .map(|t| t.expose().to_string());
         devkitd_config.poll_interval = Duration::from_secs(config.poll_interval_secs);
         devkitd_config.max_step_output_kb = config.max_step_output_kb;
         let devkitd: Arc<dyn Devkitd> = Arc::new(DevkitdClient::new(devkitd_config));
@@ -46,6 +53,11 @@ impl Container {
             scheduler_config.clone(),
         ));
 
+        let platform_client = config
+            .platform
+            .as_ref()
+            .map(|p| Arc::new(PlatformClient::new(p)));
+
         Ok(Container {
             config,
             state_store,
@@ -53,6 +65,7 @@ impl Container {
             flow_source,
             scheduler,
             scheduler_config,
+            platform_client,
         })
     }
 
@@ -68,6 +81,10 @@ impl Container {
         scheduler: Arc<Scheduler>,
         scheduler_config: SchedulerConfig,
     ) -> Container {
+        let platform_client = config
+            .platform
+            .as_ref()
+            .map(|p| Arc::new(PlatformClient::new(p)));
         Container {
             config,
             state_store,
@@ -75,6 +92,7 @@ impl Container {
             flow_source,
             scheduler,
             scheduler_config,
+            platform_client,
         }
     }
 }

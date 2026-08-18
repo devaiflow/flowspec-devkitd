@@ -40,6 +40,16 @@ pub struct StartFlowRequest {
     pub idempotency_key: Option<String>,
 }
 
+/// The part of `StartFlowRequest` that doesn't depend on resolving a flow by
+/// name — shared by the by-name (`start_flow`) and by-value
+/// (`start_flow_with_definition`) entry points.
+#[derive(Debug, Clone)]
+pub struct StartFlowRequestBase {
+    pub inputs: Value,
+    pub trigger: Value,
+    pub idempotency_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct StartFlowResponse {
@@ -65,6 +75,30 @@ pub async fn start_flow(
         .await
         .ok_or_else(|| StartFlowError::FlowNotFound(req.flow_name.clone()))?;
 
+    start_flow_with_definition(
+        store,
+        scheduler,
+        definition,
+        StartFlowRequestBase {
+            inputs: req.inputs,
+            trigger: req.trigger,
+            idempotency_key: req.idempotency_key,
+        },
+    )
+    .await
+}
+
+/// Starts a run from a flow definition supplied by value (e.g. a platform's
+/// `flow_doc`) rather than resolved by name from a `FlowSource`. The caller
+/// is responsible for validating `definition` (see
+/// `flowspec_domain::flow::validate`) before calling — an invalid definition
+/// is not rejected here.
+pub async fn start_flow_with_definition(
+    store: Arc<dyn StateStore>,
+    scheduler: Arc<Scheduler>,
+    definition: flowspec_domain::flow::types::FlowDefinition,
+    req: StartFlowRequestBase,
+) -> Result<StartFlowResponse, StartFlowError> {
     let missing: Vec<String> = definition
         .inputs
         .iter()
@@ -107,6 +141,21 @@ pub async fn start_flow(
         }
         Err(e) => return Err(e.into()),
     };
+
+    store
+        .apply(
+            &run_id,
+            vec![crate::ports::Mutation::AppendEvent(
+                crate::ports::RunEventRecord {
+                    event_type: crate::ports::RunEventType::RunStarted,
+                    step_id: None,
+                    timestamp: std::time::SystemTime::now(),
+                    payload: serde_json::json!({}),
+                },
+            )],
+        )
+        .await?;
+
     scheduler.start_deadline_for_run(&run_id).await;
     scheduler.submit(run_id.clone(), Event::RunStarted).await;
 

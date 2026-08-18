@@ -5,7 +5,7 @@ Living log of *actual* implementation state: what shipped, where the code diverg
 Append a section per phase. This is **not** a spec duplicate — only what code + git history don't
 already say.
 
-Last updated: 2026-08-09 (Phase 5.4, rmcp 0.16 → 3.1.2, done; 5.2 host validation still pending).
+Last updated: 2026-08-10 (Phase 5.5, platform connector, done; 5.2 host validation still pending).
 
 ---
 
@@ -18,11 +18,13 @@ Last updated: 2026-08-09 (Phase 5.4, rmcp 0.16 → 3.1.2, done; 5.2 host validat
 | 2 | ✅ done | Persistence: `StateStore` + `Mutation`, in-memory + SQLite, `recovery_plan` |
 | 3 | ✅ done | Execution loop vs fakes: scheduler, ports, fakes, use cases, integration suite |
 | 4 | ✅ done | Real devkitd adapter (rmcp/MCP), tracer bullet, failure/cancel/re-attach e2e |
-| 5 | 🟡 5.1 + 5.4 done, 5.2 pending | MCP tool surface (10 tools) done and tested; upgraded to rmcp 3.1.2; OpenClaw host validation (`docs/openclaw-validation.md`) not yet run |
+| 5 | 🟡 5.1/5.4/5.4.1/5.6 done, 5.2 pending | MCP tool surface (10 tools) done and tested; upgraded to rmcp 3.1.2; `list_runs` param bug fixed; hook/step failures structured; OpenClaw host validation (`docs/openclaw-validation.md`) not yet run |
+| 5.5 | ✅ done | Platform connector: outbound HTTP client, action poller, run-event outbox + pump, by-value flow start. See below. |
 | 6 | ⏳ pending | Subflow dispatch + chaos testing |
 
-Verification at end of Phase 5.4: `cargo test --workspace` = **123 passed, 8 ignored** (the 8 need a
-live devkitd, unchanged from Phase 4); `just lint` green (fmt + clippy `-D warnings` + layering).
+Verification at end of Phase 5.5: `cargo test --workspace` = **142 passed, 8 ignored** (13 new tests
+over the 129 baseline; the 8 ignored need a live devkitd, unchanged since Phase 4); `just lint` green
+(fmt + clippy `-D warnings` + layering, now with a 4th `reqwest`-not-in-`flowspec-app` assertion).
 
 ---
 
@@ -251,6 +253,87 @@ ignored (up from the 124 baseline: +3 from this session's `list_runs`/`JobFailur
 tests plus the migration test, +2 from the new `mcp_tools.rs` tests). Live-devkitd verification
 against a real failing hook (confirming the diagnosis is reachable from `get_run_status` alone, no
 curl) not yet run — do this before the next Phase 5.2 attempt.
+
+---
+
+## Phase 5.5 — platform connector (`PLAN-LIVERUN-CONNECTED.md`)
+
+Cashes in the seam `architecture.md` deferred ("Platform event queue and pump — out of scope...
+event enqueueing later is additive"). Connects flowspec-devkitd to `devaiflow-platform`'s Live Run
+Mode: outbound-only HTTP, polling for work and pushing state, so it works from behind
+NAT/Tailscale/a private network with no inbound port opened — same shape as the devkitd MCP client.
+
+**What shipped:**
+
+- **By-value flow start** (`flowspec-app/use_cases/start_flow.rs`): `start_flow_with_definition`
+  split out of `start_flow` at the `flows.get(...)` line. The connector parses the platform's
+  `flow_doc` (JSON, `{flow:...}` or `{flows:[...]}`) into a `FlowDefinition` and runs
+  `flowspec_domain::flow::validate` on it before calling — same gate `FsFlowSource::load` uses.
+  `flow.metadata.ui` needed no schema change: `FlowDefinition.metadata` is a free-form
+  `IndexMap<String, Value>` with no `deny_unknown_fields` (only `Step` is strict).
+- **Run-event outbox**: `Mutation::AppendEvent(RunEventRecord)` (13th variant), a `run_events`
+  SQLite table (INTEGER epoch timestamps, matching the rest of the schema — not TEXT), and two new
+  `StateStore` methods (`unpushed_events`, `mark_events_pushed`), implemented in both `SqliteStore`
+  and `InMemoryStateStore`. Sequence is assigned by the store (`MAX(sequence)+1` per run) *inside*
+  the same transaction as the mutation batch that caused the event — no app-layer counter to desync.
+  Emission sites in `scheduler.rs`: `activate_steps` (`step_activated`), `SetJobId` success
+  (`step_started`), `MarkStepStatus` terminal/waiting-approval (`step_completed`/`step_failed`/
+  `step_waiting_approval`), `MarkRunTerminal` (`run_completed`/`run_failed`/`run_cancelled`), and —
+  easy to miss — `hook_batch_finished`'s before_run-gate arm, which writes `SetRunPhase(Failed)`
+  directly and bypasses `Command::MarkRunTerminal` entirely. `run_started` has no existing batch to
+  ride (`create_run` is a standalone INSERT), so it gets its own `apply()` right after. `approvals.rs`
+  emits `approval_resolved` as an independent `apply()` ahead of `scheduler.submit`.
+  `step_stream_delta` is never emitted (devkitd has no streaming-output contract).
+- **`FlowRunSnapshot` projection** (`use_cases/queries.rs`): mirrors the platform's `FlowRunSchema`/
+  `StepRunSchema` field-for-field, distinct from `RunStatus` (the MCP host's ergonomic,
+  output-truncated view). `run_id` in the snapshot is the *platform's* run id — the `idempotency_key`
+  with its `platform:` prefix stripped (`platform_run_id()`), not flowspec's own `run_<ulid>`.
+  Tokens/cost are omitted entirely rather than sent as `0`/`null` (the platform's Zod schema is
+  `.passthrough()` and marks them optional).
+- **Connector adapter** (`flowspec-server/src/platform/`): `client.rs` (typed `reqwest` wrapper over
+  the five `docs/platform-agent-api.md` endpoints), `poller.rs` (action queue loop), `pump.rs`
+  (outbox drain). `reqwest 0.13.4` is now a *direct* dep of `flowspec-server` only, pinned to the
+  same version rmcp 3.1.2 already pulls in transitively; `check-layering.sh` gained a 4th assertion.
+  Poller policy for approve/reject that arrives before the step reaches `waiting_approval`: **leave
+  the action pending**, don't ack or delete — matches `scripts/mock-runtime.mjs`'s reference
+  behavior exactly, relies on the platform's durable queue redelivering it. `approvals::resolve_step_id`
+  already handled the omitted-`step_id` / ambiguous / not-waiting cases, so the poller just maps its
+  error variants. `409 action_not_pending` on ack is treated as success. DELETE is never called on an
+  action already acked (it would retroactively fail a live `trigger_run`).
+- **Config**: optional `platform:` block in `Config` (absent = connector fully disabled, nothing
+  changes for a pure-OpenClaw deployment); a `Secret` newtype with a redacting `Debug`, applied to
+  both `platform.token` and (retrofit) `devkitd_auth_token`, which previously had no such protection
+  despite `Config` deriving plain `Debug`. Figment env layering needed
+  `Env::prefixed("FLOWSPEC_").split("__")` added so `FLOWSPEC_PLATFORM__URL` nests into
+  `platform.url` — plain single-underscore keys are unaffected.
+- **Wiring**: `container.rs` builds an optional `Arc<PlatformClient>`; `main.rs` spawns the poller
+  and pump as two `tokio::spawn`ed loops (independent poll timers) holding child tokens of the
+  existing shutdown `CancellationToken`, started after `scheduler.recover()` and before
+  `mcp_server::serve`, joined after `scheduler.shutdown()`.
+
+**Tests added** (13, all green): `flowspec-app/tests/outbox.rs` (2 — outbox sequencing/atomicity
+across transaction boundaries, `flow_run_snapshot` across approve + reject-self-loop);
+`flowspec-server/tests/platform_connector.rs` (5 — poller/pump against a plain axum stub: trigger_run
+ack, redelivery replay via `find_by_idempotency_key`, invalid `flow_doc` → delete, unknown-run
+approve → delete, pump drains events-then-state); `flows_fixtures_valid.rs` (+2 — platform-shaped
+`flow_doc` with `metadata.ui`/`needs`/`on_success: "done"` validates cleanly, missing `with.input`
+rejected not panicking); `config.rs` (+4 — platform block absent/present, env double-underscore
+nesting, token never appears in `Debug` output).
+
+**Known bound, not fixed here:** the pre-existing two-batch activate window (`step_activated` and
+`step_started` commit in separate transactions) means a crash between them can leave an event gap;
+recovery re-derives state and the next pump tick's state push corrects the UI regardless.
+
+**Not done, deliberately deferred:**
+- Tokens/cost/`stream_log_ref` — needs `devkitd/scripts/agent-run.sh` to emit `meta.json` as JSON on
+  stdout; flowspec's existing layer-2 double-decode would pick it up with no runtime change.
+- `artifacts[]` — still no producer anywhere in the stack.
+- Subflow runs (`parent_run_id`/`child_run_ids` in the snapshot) — land with Phase 6.
+
+**Verification against a real platform + devkitd not yet run** — this session covers the code and
+its fakes/stub-server tests only. Before the first real live run: `wrangler d1 migrations apply DB
+--local`, register a runtime, run the tracer-equivalent flow, then human-loop approve/reject, then
+durability (kill mid-run), per `PLAN-LIVERUN-CONNECTED.md`'s verification section.
 
 ---
 

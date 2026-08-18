@@ -2,7 +2,7 @@ use crate::ids;
 use crate::ports::{
     Devkitd, DevkitdError, FlowSource, HookRunRecord, JobHandle, LivenessSink, Mutation, NewRun,
     RunFilter, RunId, RunRecord, RunSummary, RunTree, StartRequest, StateStore, StepOutput,
-    StepRecord, StoreError,
+    StepRecord, StoreError, StoredRunEvent,
 };
 use async_trait::async_trait;
 use flowspec_domain::flow::types::FlowDefinition;
@@ -19,6 +19,10 @@ use tokio::sync::{Mutex, RwLock};
 pub struct InMemoryStateStore {
     runs: RwLock<HashMap<RunId, RunRecord>>,
     hook_runs: RwLock<HashMap<RunId, Vec<HookRunRecord>>>,
+    events: RwLock<HashMap<RunId, Vec<StoredRunEvent>>>,
+    /// Highest sequence marked pushed, per run. Mirrors `run_events.pushed_at
+    /// IS NOT NULL` without needing a mutable flag per stored event.
+    events_pushed_through: RwLock<HashMap<RunId, u64>>,
 }
 
 impl Default for InMemoryStateStore {
@@ -32,6 +36,8 @@ impl InMemoryStateStore {
         Self {
             runs: RwLock::new(HashMap::new()),
             hook_runs: RwLock::new(HashMap::new()),
+            events: RwLock::new(HashMap::new()),
+            events_pushed_through: RwLock::new(HashMap::new()),
         }
     }
 
@@ -136,6 +142,10 @@ impl InMemoryStateStore {
                 // Handled in `apply` (needs `&self`, not `&mut RunRecord`) --
                 // this mutation doesn't touch `RunRecord` at all.
             }
+            Mutation::AppendEvent(_) => {
+                // Handled in `apply` (needs `&self` to assign a per-run
+                // sequence) -- this mutation doesn't touch `RunRecord` either.
+            }
         }
         Ok(())
     }
@@ -207,14 +217,22 @@ impl StateStore for InMemoryStateStore {
     }
 
     async fn apply(&self, run_id: &str, mutations: Vec<Mutation>) -> Result<(), StoreError> {
-        // RecordHookRun isn't part of RunRecord (it mirrors the SQLite
-        // adapter's separate hook_runs table), so it can't go through
-        // apply_mutation's &mut RunRecord signature. Pull those out here,
-        // where &self is in scope, and append them alongside the batch.
+        // RecordHookRun/AppendEvent aren't part of RunRecord (they mirror the
+        // SQLite adapter's separate hook_runs/run_events tables), so they
+        // can't go through apply_mutation's &mut RunRecord signature. Pull
+        // those out here, where &self is in scope, and append them alongside
+        // the batch.
         let hook_records: Vec<HookRunRecord> = mutations
             .iter()
             .filter_map(|m| match m {
                 Mutation::RecordHookRun(h) => Some(h.clone()),
+                _ => None,
+            })
+            .collect();
+        let event_records: Vec<_> = mutations
+            .iter()
+            .filter_map(|m| match m {
+                Mutation::AppendEvent(e) => Some(e.clone()),
                 _ => None,
             })
             .collect();
@@ -236,6 +254,20 @@ impl StateStore for InMemoryStateStore {
                 .entry(run_id.to_string())
                 .or_default()
                 .extend(hook_records);
+        }
+        if !event_records.is_empty() {
+            let mut guard = self.events.write().await;
+            let list = guard.entry(run_id.to_string()).or_default();
+            for record in event_records {
+                let sequence = list.last().map(|e| e.sequence + 1).unwrap_or(1);
+                list.push(StoredRunEvent {
+                    sequence,
+                    event_type: record.event_type,
+                    step_id: record.step_id,
+                    timestamp: record.timestamp,
+                    payload: record.payload,
+                });
+            }
         }
         Ok(())
     }
@@ -295,6 +327,42 @@ impl StateStore for InMemoryStateStore {
     async fn list_hook_runs(&self, run_id: &str) -> Result<Vec<HookRunRecord>, StoreError> {
         let guard = self.hook_runs.read().await;
         Ok(guard.get(run_id).cloned().unwrap_or_default())
+    }
+
+    async fn unpushed_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(RunId, StoredRunEvent)>, StoreError> {
+        let events = self.events.read().await;
+        let pushed_through = self.events_pushed_through.read().await;
+        let mut out = Vec::new();
+        // Deterministic ordering (run_id, sequence), matching the SQLite
+        // adapter's `ORDER BY run_id, sequence`.
+        let mut run_ids: Vec<&RunId> = events.keys().collect();
+        run_ids.sort();
+        'outer: for run_id in run_ids {
+            let through = pushed_through.get(run_id).copied().unwrap_or(0);
+            for event in &events[run_id] {
+                if event.sequence > through {
+                    out.push((run_id.clone(), event.clone()));
+                    if out.len() >= limit {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn mark_events_pushed(
+        &self,
+        run_id: &str,
+        through_sequence: u64,
+    ) -> Result<(), StoreError> {
+        let mut pushed_through = self.events_pushed_through.write().await;
+        let entry = pushed_through.entry(run_id.to_string()).or_insert(0);
+        *entry = (*entry).max(through_sequence);
+        Ok(())
     }
 }
 

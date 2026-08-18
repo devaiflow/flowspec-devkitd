@@ -21,6 +21,7 @@ tokio-util = { workspace = true }
 axum = { workspace = true }
 figment = { workspace = true }
 rusqlite = { workspace = true }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }
 serde_json = { workspace = true }

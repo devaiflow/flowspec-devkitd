@@ -301,6 +301,140 @@ pub async fn get_run_status(
     })
 }
 
+/// Prefix flowspec puts on `idempotency_key` for runs started from the
+/// platform's `trigger_run` action -- see `platform::poller`. Kept here
+/// (rather than only in `flowspec-server`) because `flow_run_snapshot`
+/// needs to strip it back off to recover the platform's own run id.
+pub const PLATFORM_IDEMPOTENCY_PREFIX: &str = "platform:";
+
+/// Mirrors the platform's `StepRunSchema` (`src/lib/run-schemas.ts`)
+/// field-for-field. Distinct from `StepInfo`: that struct is the MCP host's
+/// ergonomic, output-truncated view; this one is the platform's full replica
+/// projection, pushed verbatim by the connector's pump loop.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepRunSnapshot {
+    pub step_id: String,
+    pub status: String,
+    #[serde(rename = "type")]
+    pub step_type: String,
+    pub with_resolved: Option<Value>,
+    pub started_at: Option<Timestamp>,
+    pub completed_at: Option<Timestamp>,
+    pub duration_seconds: Option<f64>,
+    pub input_resolved: Option<String>,
+    pub child_run_id: Option<String>,
+    pub human_loop: bool,
+    pub approval_status: Option<String>,
+    pub approval_comment: Option<String>,
+    pub feedback: Option<String>,
+    pub failure_reason: Option<String>,
+    pub attempt: u32,
+}
+
+/// Mirrors the platform's `FlowRunSchema`. `run_id` here is the *platform's*
+/// run id (the `idempotency_key` with its `platform:` prefix stripped), not
+/// flowspec's own `run_<ulid>` -- the platform's push endpoints are keyed by
+/// their own id, per `docs/platform-agent-api.md`. Tokens/cost are omitted
+/// entirely rather than sent as zero/null: the platform's Zod schema marks
+/// them optional and the endpoint is `.passthrough()`, so omission is
+/// indistinguishable from "not yet known" instead of lying with a `0`.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlowRunSnapshot {
+    pub run_id: String,
+    pub flow: String,
+    pub flow_version: String,
+    pub phase: String,
+    pub active_steps: Vec<String>,
+    pub started_at: Timestamp,
+    pub completed_at: Option<Timestamp>,
+    pub steps: Vec<StepRunSnapshot>,
+}
+
+/// Strips the `platform:` prefix flowspec adds to `idempotency_key` for
+/// platform-originated runs. `None` if the run has no idempotency key or it
+/// wasn't platform-prefixed (an MCP-started run has no platform mirror).
+pub fn platform_run_id(idempotency_key: Option<&str>) -> Option<&str> {
+    idempotency_key.and_then(|k| k.strip_prefix(PLATFORM_IDEMPOTENCY_PREFIX))
+}
+
+pub async fn flow_run_snapshot(
+    store: Arc<dyn StateStore>,
+    run_id: &RunId,
+) -> Result<FlowRunSnapshot, QueryError> {
+    let record = store.load_run(run_id).await?;
+    let state = record.run_state();
+    let active_steps = crate::scheduler::run_active_steps(&state);
+
+    let steps: Vec<StepRunSnapshot> = record
+        .latest_steps()
+        .into_iter()
+        .map(|s| {
+            let step_def = record.definition.step(&s.run.step_id);
+            let step_type = step_def
+                .map(|st| st.type_name().to_string())
+                .unwrap_or_else(|| "cli".to_string());
+            let human_loop = step_def.map(|st| st.human_loop).unwrap_or(false);
+            let duration_seconds = match (s.run.started_at, s.run.completed_at) {
+                (Some(started), Some(completed)) => completed
+                    .duration_since(started)
+                    .ok()
+                    .map(|d| d.as_secs_f64()),
+                _ => None,
+            };
+            StepRunSnapshot {
+                step_id: s.run.step_id.clone(),
+                status: status_str(s.run.status),
+                step_type,
+                with_resolved: s.with_resolved.clone(),
+                started_at: s.run.started_at.map(Timestamp::from),
+                completed_at: s.run.completed_at.map(Timestamp::from),
+                duration_seconds,
+                input_resolved: s.run.input_resolved.clone(),
+                child_run_id: s.run.child_run_id.clone(),
+                human_loop,
+                approval_status: s.run.approval_status.map(|a| {
+                    serde_json::to_value(a)
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                }),
+                approval_comment: s.run.approval_comment.clone(),
+                feedback: s.run.feedback.clone(),
+                failure_reason: s.run.failure_reason.clone(),
+                attempt: s.run.attempt,
+            }
+        })
+        .collect();
+
+    let is_terminal = matches!(
+        record.phase,
+        RunPhase::Completed | RunPhase::Failed | RunPhase::Cancelled
+    );
+    let completed_at = is_terminal.then(|| {
+        record
+            .steps
+            .iter()
+            .filter_map(|s| s.run.completed_at)
+            .max()
+            .unwrap_or(record.updated_at)
+            .into()
+    });
+
+    Ok(FlowRunSnapshot {
+        run_id: platform_run_id(record.idempotency_key.as_deref())
+            .unwrap_or(&record.run_id)
+            .to_string(),
+        flow: record.flow_name,
+        flow_version: record.flow_version,
+        phase: status_str_phase(record.phase),
+        active_steps,
+        started_at: record.created_at.into(),
+        completed_at,
+        steps,
+    })
+}
+
 pub async fn get_step_output(
     store: Arc<dyn StateStore>,
     req: GetStepOutputRequest,

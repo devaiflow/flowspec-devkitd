@@ -4,6 +4,30 @@ use figment::{
 };
 use serde::Deserialize;
 
+/// Wraps a credential so it can never leak through a derived `Debug` --
+/// `Config` (and `PlatformConfig`) are logged wholesale at startup for
+/// diagnostics, and a plain `Option<String>` would print the token in that
+/// output. Retrofit of `devkitd_auth_token`, which did exactly that before
+/// this type existed.
+#[derive(Clone, Deserialize)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Secret(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExecutorConfig {
     #[serde(default = "default_cli_tool")]
@@ -33,7 +57,7 @@ pub struct Config {
     #[serde(default = "default_allowed_hosts")]
     pub allowed_hosts: Vec<String>,
     pub devkitd_url: String,
-    pub devkitd_auth_token: Option<String>,
+    pub devkitd_auth_token: Option<Secret>,
     #[serde(default = "default_flows_dir")]
     pub flows_dir: String,
     #[serde(default = "default_db_path")]
@@ -50,6 +74,34 @@ pub struct Config {
     pub max_subflow_depth: u32,
     #[serde(default)]
     pub executor: ExecutorConfig,
+    /// Absent = the platform connector is disabled entirely -- nothing
+    /// changes for a pure-OpenClaw deployment. Set via a `platform:` block
+    /// in the YAML file, or `FLOWSPEC_PLATFORM__URL` / `FLOWSPEC_PLATFORM__TOKEN`
+    /// / etc. (double underscore -- see `Env::prefixed(..).split("__")` below).
+    #[serde(default)]
+    pub platform: Option<PlatformConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlatformConfig {
+    /// Base URL of the devaiflow-platform instance, e.g. `https://devaiflow.example`.
+    pub url: String,
+    /// Runtime bearer token (`dvf_...`) from the platform's `/runtimes` page.
+    pub token: Secret,
+    /// Must stay under 15s: `/runtimes` shows "Connected" only while
+    /// `last_seen_at` (bumped on every authenticated poll) is within a 15s
+    /// window that the platform's UI itself refreshes every 10s.
+    #[serde(default = "default_platform_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default = "default_platform_event_batch_size")]
+    pub event_batch_size: usize,
+}
+
+fn default_platform_poll_interval_secs() -> u64 {
+    5
+}
+fn default_platform_event_batch_size() -> usize {
+    100
 }
 
 fn default_listen_addr() -> String {
@@ -106,7 +158,11 @@ impl Config {
     pub fn from_yaml_file(path: &str) -> Result<Config, ConfigError> {
         Figment::new()
             .merge(Yaml::file(path))
-            .merge(Env::prefixed("FLOWSPEC_"))
+            // "__" (double underscore) nests into sub-tables, e.g.
+            // FLOWSPEC_PLATFORM__URL -> platform.url. Plain "_" keys
+            // (FLOWSPEC_DEVKITD_URL, FLOWSPEC_POLL_INTERVAL_SECS, ...) are
+            // unaffected -- split() only acts where the separator appears.
+            .merge(Env::prefixed("FLOWSPEC_").split("__"))
             .extract()
             .map_err(ConfigError::from)
     }

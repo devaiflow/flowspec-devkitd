@@ -65,3 +65,83 @@ fn missing_required_field_fails_fast() {
         "devkitd_url is required and has no default"
     );
 }
+
+#[test]
+fn platform_block_absent_disables_the_connector() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let path = write_temp_yaml("devkitd_url: \"http://localhost:9000\"\n");
+    let config = Config::from_yaml_file(path.to_str().unwrap()).expect("config loads");
+    std::fs::remove_file(&path).ok();
+
+    assert!(
+        config.platform.is_none(),
+        "no platform: block in the file must leave the connector disabled"
+    );
+}
+
+#[test]
+fn platform_block_loads_from_yaml() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let path = write_temp_yaml(
+        r#"
+devkitd_url: "http://localhost:9000"
+platform:
+  url: "https://devaiflow.example"
+  token: "dvf_abc123"
+  poll_interval_secs: 5
+"#,
+    );
+    let config = Config::from_yaml_file(path.to_str().unwrap()).expect("config loads");
+    std::fs::remove_file(&path).ok();
+
+    let platform = config.platform.expect("platform: block must be parsed");
+    assert_eq!(platform.url, "https://devaiflow.example");
+    assert_eq!(platform.token.expose(), "dvf_abc123");
+    assert_eq!(platform.poll_interval_secs, 5);
+    assert_eq!(platform.event_batch_size, 100, "must default to 100");
+}
+
+#[test]
+fn platform_env_vars_nest_with_double_underscore() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let path = write_temp_yaml("devkitd_url: \"http://localhost:9000\"\n");
+
+    // SAFETY: this test owns these env vars for its duration, under ENV_LOCK.
+    unsafe {
+        std::env::set_var("FLOWSPEC_PLATFORM__URL", "https://env-platform.example");
+        std::env::set_var("FLOWSPEC_PLATFORM__TOKEN", "dvf_env_token");
+    }
+    let config = Config::from_yaml_file(path.to_str().unwrap()).expect("config loads");
+    unsafe {
+        std::env::remove_var("FLOWSPEC_PLATFORM__URL");
+        std::env::remove_var("FLOWSPEC_PLATFORM__TOKEN");
+    }
+    std::fs::remove_file(&path).ok();
+
+    let platform = config
+        .platform
+        .expect("FLOWSPEC_PLATFORM__* must nest into platform:");
+    assert_eq!(platform.url, "https://env-platform.example");
+    assert_eq!(platform.token.expose(), "dvf_env_token");
+
+    // Single-underscore keys (e.g. FLOWSPEC_DEVKITD_URL) must stay
+    // unaffected by adding `.split("__")` -- confirmed by every other test
+    // in this file still passing, but assert it directly here too.
+    assert_eq!(config.devkitd_url, "http://localhost:9000");
+}
+
+#[test]
+fn devkitd_auth_token_never_appears_in_debug_output() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let path = write_temp_yaml(
+        "devkitd_url: \"http://localhost:9000\"\ndevkitd_auth_token: \"super-secret-token\"\n",
+    );
+    let config = Config::from_yaml_file(path.to_str().unwrap()).expect("config loads");
+    std::fs::remove_file(&path).ok();
+
+    let debug_output = format!("{config:?}");
+    assert!(
+        !debug_output.contains("super-secret-token"),
+        "Debug output must never leak devkitd_auth_token: {debug_output}"
+    );
+}

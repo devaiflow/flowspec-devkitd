@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use flowspec_app::ids;
 use flowspec_app::ports::{
-    HookRunRecord, Mutation, NewRun, RunFilter, RunId, RunRecord, RunSummary, RunTree, StateStore,
-    StepRecord, StoreError,
+    HookRunRecord, Mutation, NewRun, RunEventType, RunFilter, RunId, RunRecord, RunSummary,
+    RunTree, StateStore, StepRecord, StoreError, StoredRunEvent,
 };
 use flowspec_domain::flow::types::FlowDefinition;
 use flowspec_domain::run::types::RunPhase;
@@ -290,6 +290,70 @@ impl StateStore for SqliteStore {
         let run_id = run_id.to_string();
         self.run_on_thread(move |conn| list_hook_runs_sync(conn, &run_id))
             .await
+    }
+
+    async fn unpushed_events(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(RunId, StoredRunEvent)>, StoreError> {
+        self.run_on_thread(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, sequence, event_type, step_id, timestamp, payload
+                     FROM run_events WHERE pushed_at IS NULL
+                     ORDER BY run_id, sequence LIMIT ?",
+                )
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let rows = stmt
+                .query_map([limit as i64], |row| {
+                    let run_id: String = row.get(0)?;
+                    let event_type_str: String = row.get(2)?;
+                    let event_type: RunEventType =
+                        enum_from_str(&event_type_str).map_err(sqlite_from_store)?;
+                    let payload_str: String = row.get(5)?;
+                    let payload: Value = parse_json(&payload_str).map_err(sqlite_from_store)?;
+                    Ok((
+                        run_id,
+                        StoredRunEvent {
+                            sequence: row.get::<_, i64>(1)? as u64,
+                            event_type,
+                            step_id: row.get(3)?,
+                            timestamp: from_epoch(row.get(4)?),
+                            payload,
+                        },
+                    ))
+                })
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(|e| StoreError::Backend(e.to_string()))?);
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    async fn mark_events_pushed(
+        &self,
+        run_id: &str,
+        through_sequence: u64,
+    ) -> Result<(), StoreError> {
+        let run_id = run_id.to_string();
+        self.run_on_thread(move |conn| {
+            conn.execute(
+                "UPDATE run_events SET pushed_at = ?
+                 WHERE run_id = ? AND sequence <= ? AND pushed_at IS NULL",
+                (
+                    to_epoch(SystemTime::now()),
+                    &run_id,
+                    through_sequence as i64,
+                ),
+            )
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -635,6 +699,28 @@ fn apply_mutation(tx: &Transaction, run_id: &str, m: Mutation) -> Result<(), Sto
                     hook.failure_detail.as_ref().map(to_json).transpose()?.as_ref(),
                     to_epoch(hook.started_at),
                     hook.completed_at.map(to_epoch),
+                ),
+            )
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        }
+        Mutation::AppendEvent(event) => {
+            let next_sequence: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            tx.execute(
+                "INSERT INTO run_events (run_id, sequence, event_type, step_id, timestamp, payload)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    next_sequence,
+                    enum_to_str(&event.event_type),
+                    event.step_id.as_ref(),
+                    to_epoch(event.timestamp),
+                    to_json(&event.payload)?,
                 ),
             )
             .map_err(|e| StoreError::Backend(e.to_string()))?;

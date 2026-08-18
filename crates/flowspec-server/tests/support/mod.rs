@@ -42,6 +42,7 @@ fn fake_config() -> Config {
         executor: ExecutorConfig {
             cli_tool: "agent-run".to_string(),
         },
+        platform: None,
     }
 }
 

@@ -1,6 +1,7 @@
 use crate::ports::{
     Devkitd, HookPhase as PortHookPhase, HookRunRecord, HookStatus, JobHandle, LivenessSink,
-    Mutation, RunId, RunRecord, SchedulerConfig, StartRequest, StateStore, StepRecord,
+    Mutation, RunEventRecord, RunEventType, RunId, RunRecord, SchedulerConfig, StartRequest,
+    StateStore, StepRecord,
 };
 use crate::recovery::{RecoveryAction, RecoveryReason, recovery_plan};
 use crate::wire::JobFailure;
@@ -292,6 +293,11 @@ impl Scheduler {
                         with_resolved: None,
                         failure_detail: None,
                     }));
+                    mutations.push(event_mutation(
+                        RunEventType::StepWaitingOnSubflow,
+                        Some(step_id.clone()),
+                        Value::Null,
+                    ));
                     follow_ons.push(Event::StepFailed {
                         step_id,
                         reason: "subflows not yet supported".into(),
@@ -361,12 +367,46 @@ impl Scheduler {
                         }
                     }
                     self.add_event_data(event, &step_id, attempt, &mut mutations);
+                    match status {
+                        StepStatus::WaitingApproval => {
+                            mutations.push(event_mutation(
+                                RunEventType::StepWaitingApproval,
+                                Some(step_id.clone()),
+                                step_completed_output(event, &step_id).unwrap_or(Value::Null),
+                            ));
+                        }
+                        StepStatus::Completed => {
+                            mutations.push(event_mutation(
+                                RunEventType::StepCompleted,
+                                Some(step_id.clone()),
+                                step_completed_output(event, &step_id).unwrap_or(Value::Null),
+                            ));
+                        }
+                        StepStatus::Failed | StepStatus::FailedRejected => {
+                            mutations.push(event_mutation(
+                                RunEventType::StepFailed,
+                                Some(step_id.clone()),
+                                step_failed_payload(event, &step_id).unwrap_or(Value::Null),
+                            ));
+                        }
+                        // Skipped/Cancelled: no dedicated event type in the
+                        // platform's RunEventTypeSchema; the state snapshot
+                        // (Step 3) already surfaces the status.
+                        _ => {}
+                    }
                 }
                 Command::MarkRunTerminal(phase) => {
                     mutations.push(Mutation::SetRunPhase(phase));
                     if phase == RunPhase::Cancelled {
                         mutations.push(Mutation::SetRunCancelled);
                     }
+                    let event_type = match phase {
+                        RunPhase::Completed => RunEventType::RunCompleted,
+                        RunPhase::Failed => RunEventType::RunFailed,
+                        RunPhase::Cancelled => RunEventType::RunCancelled,
+                        RunPhase::Running => unreachable!("MarkRunTerminal never carries Running"),
+                    };
+                    mutations.push(event_mutation(event_type, None, Value::Null));
                     self.abort_deadline(run_id);
                 }
             }
@@ -446,6 +486,11 @@ impl Scheduler {
         }
 
         for rec in step_records {
+            mutations.push(event_mutation(
+                RunEventType::StepActivated,
+                Some(rec.run.step_id.clone()),
+                Value::Null,
+            ));
             mutations.push(Mutation::InsertStepRun(rec));
         }
         if !mutations.is_empty() {
@@ -533,11 +578,18 @@ impl Scheduler {
                         .store
                         .apply(
                             &run_id,
-                            vec![Mutation::SetJobId {
-                                step_id: step_id.clone(),
-                                attempt,
-                                job_id: Some(handle.0.clone()),
-                            }],
+                            vec![
+                                Mutation::SetJobId {
+                                    step_id: step_id.clone(),
+                                    attempt,
+                                    job_id: Some(handle.0.clone()),
+                                },
+                                event_mutation(
+                                    RunEventType::StepStarted,
+                                    Some(step_id.clone()),
+                                    Value::Null,
+                                ),
+                            ],
                         )
                         .await
                     {
@@ -907,7 +959,17 @@ impl Scheduler {
                 let _guard = lock.lock().await;
                 let _ = self
                     .store
-                    .apply(&run_id, vec![Mutation::SetRunPhase(RunPhase::Failed)])
+                    .apply(
+                        &run_id,
+                        vec![
+                            Mutation::SetRunPhase(RunPhase::Failed),
+                            event_mutation(
+                                RunEventType::RunFailed,
+                                None,
+                                serde_json::json!({ "reason": reason }),
+                            ),
+                        ],
+                    )
                     .await;
                 self.abort_deadline(&run_id);
             }
@@ -1060,6 +1122,42 @@ impl Scheduler {
             .find(|s| s.run.step_id == step_id)
             .map(|s| s.run.attempt)
             .ok_or_else(|| SchedulerError::Engine(format!("step {step_id} not found")))
+    }
+}
+
+/// Builds a `Mutation::AppendEvent` for the platform run-event outbox.
+/// `timestamp` is always "now" -- events are pushed live, never backdated.
+fn event_mutation(event_type: RunEventType, step_id: Option<String>, payload: Value) -> Mutation {
+    Mutation::AppendEvent(RunEventRecord {
+        event_type,
+        step_id,
+        timestamp: SystemTime::now(),
+        payload,
+    })
+}
+
+/// The step's output, for `step_completed`/`step_waiting_approval` event
+/// payloads -- `None` unless `event` is the `StepCompleted` that triggered
+/// this status transition for `step_id`.
+fn step_completed_output(event: &Event, step_id: &str) -> Option<Value> {
+    match event {
+        Event::StepCompleted {
+            step_id: ev_step,
+            output,
+        } if ev_step == step_id => Some(output.clone()),
+        _ => None,
+    }
+}
+
+/// The failure reason, for `step_failed` event payloads -- `None` unless
+/// `event` is the `StepFailed` that triggered this status transition.
+fn step_failed_payload(event: &Event, step_id: &str) -> Option<Value> {
+    match event {
+        Event::StepFailed {
+            step_id: ev_step,
+            reason,
+        } if ev_step == step_id => Some(serde_json::json!({ "reason": reason })),
+        _ => None,
     }
 }
 

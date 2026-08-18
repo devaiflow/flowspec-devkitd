@@ -72,3 +72,23 @@ CREATE TABLE IF NOT EXISTS run_links (
     FOREIGN KEY (parent_run) REFERENCES runs(id),
     FOREIGN KEY (child_run) REFERENCES runs(id)
 );
+
+-- Durable outbox for the platform connector's run-event pump. Written in the
+-- same transaction as the state mutations that caused each event; sequence
+-- is assigned here (MAX(sequence)+1 per run), never by the app layer.
+-- Timestamps are INTEGER epoch seconds, matching every other table.
+CREATE TABLE IF NOT EXISTS run_events (
+    run_id     TEXT NOT NULL,
+    sequence   INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    step_id    TEXT NULL,
+    timestamp  INTEGER NOT NULL,
+    payload    TEXT NOT NULL,
+    pushed_at  INTEGER NULL,
+    PRIMARY KEY (run_id, sequence),
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_events_unpushed
+    ON run_events(run_id, sequence)
+    WHERE pushed_at IS NULL;
