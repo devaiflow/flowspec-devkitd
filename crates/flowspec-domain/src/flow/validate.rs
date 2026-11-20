@@ -204,14 +204,30 @@ fn human_loop_routing_pairs(flow: &FlowDefinition, out: &mut Vec<Violation>) {
     }
 }
 
+/// `reject_input` / `reject_with` only apply to the re-run a self-looping
+/// `on_reject` produces. On a step that routes its rejection elsewhere they are
+/// dead config, so flag them rather than letting them silently do nothing.
 fn reject_input_only_on_self_loop(flow: &FlowDefinition, out: &mut Vec<Violation>) {
     for step in &flow.steps {
-        if step.reject_input.is_some() && !dag::is_self_reject_loop(step) {
+        if dag::is_self_reject_loop(step) {
+            continue;
+        }
+        if step.reject_input.is_some() {
             out.push(v(
                 "reject_input_self_loop_only",
                 Some(&step.id),
                 format!(
                     "step '{}' declares reject_input but on_reject does not self-loop",
+                    step.id
+                ),
+            ));
+        }
+        if step.reject_with.is_some() {
+            out.push(v(
+                "reject_with_self_loop_only",
+                Some(&step.id),
+                format!(
+                    "step '{}' declares reject_with but on_reject does not self-loop",
                     step.id
                 ),
             ));

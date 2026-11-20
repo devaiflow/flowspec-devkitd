@@ -19,6 +19,7 @@ pub fn scheduler_config() -> SchedulerConfig {
         default_step_timeout_secs: 3600,
         max_step_output_kb: 256,
         executor_cli_tool: "agent-run".to_string(),
+        ..Default::default()
     }
 }
 
@@ -41,6 +42,7 @@ fn fake_config() -> Config {
         max_subflow_depth: 8,
         executor: ExecutorConfig {
             cli_tool: "agent-run".to_string(),
+            ..Default::default()
         },
         platform: None,
     }

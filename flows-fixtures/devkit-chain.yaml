@@ -15,6 +15,8 @@ flow:
         args:
           project: pro-rails
           feature: feat-testing-x
+          infra: external
+          routing: traefik-file
       - hook: containers-up
         timeout: 15m
         args:

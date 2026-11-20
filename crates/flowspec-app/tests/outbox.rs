@@ -21,6 +21,7 @@ fn config() -> SchedulerConfig {
         default_step_timeout_secs: 3600,
         max_step_output_kb: 256,
         executor_cli_tool: "agent-run".to_string(),
+        ..Default::default()
     }
 }
 
@@ -211,6 +212,13 @@ async fn flow_run_snapshot_tracks_approve_and_reject_self_loop() {
     assert!(plan.human_loop);
     assert_eq!(plan.status, "waiting_approval");
     assert_eq!(plan.attempt, 1);
+    assert!(
+        plan.with_resolved
+            .as_ref()
+            .and_then(|w| w.get("session"))
+            .is_none(),
+        "first attempt must carry no session arg, so the executor's own default (fresh) applies"
+    );
 
     // Reject with feedback -> self-loop, attempt 2.
     approvals::reject_step(
@@ -241,6 +249,18 @@ async fn flow_run_snapshot_tracks_approve_and_reject_self_loop() {
             .unwrap_or("")
             .contains("missing edge case"),
         "reject_input must fold the feedback into the re-run's input"
+    );
+    // Asserts on the *dispatched args*, not on run state: the bug this guards
+    // against was deriving "is this a reject re-run" from `approval_status`,
+    // which the scheduler has not persisted yet at dispatch time. Run state
+    // looked right while the executor was still being told `fresh`.
+    assert_eq!(
+        plan.with_resolved
+            .as_ref()
+            .and_then(|w| w.get("session"))
+            .and_then(|v| v.as_str()),
+        Some("continue"),
+        "the reject re-run must be dispatched with executor.reject_args merged in"
     );
 
     // Approve attempt 2 -> run completes.

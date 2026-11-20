@@ -442,6 +442,7 @@ impl Scheduler {
                 &record.definition,
                 &activation.input,
                 &self.config,
+                activation.reject_rerun,
             )?;
 
             let mut args = with_resolved.clone();
@@ -712,22 +713,36 @@ impl Scheduler {
             let state = record.run_state();
             let ctx =
                 flowspec_domain::template::build_context(&record.definition, &state, Value::Null);
-            let input = record
+            let persisted = record
                 .steps
                 .iter()
-                .find(|s| s.run.step_id == step_id && s.run.attempt == attempt)
+                .find(|s| s.run.step_id == step_id && s.run.attempt == attempt);
+            let input = persisted
                 .and_then(|s| s.run.input_resolved.clone())
                 .unwrap_or_default();
-            let (with_resolved, _tool, timeout_seconds) =
-                match build_step_request(step, &ctx, &record.definition, &input, &scheduler.config)
-                {
-                    Ok(x) => x,
-                    Err(e) => {
-                        tracing::error!(run_id = %run_id, "reattach request build failed: {e}");
-                        return;
-                    }
-                };
-            let mut args = with_resolved;
+            // `build_step_request` is still needed for `timeout_seconds` (derived
+            // from the step definition and config, not from state), but its args
+            // are only a fallback: the persisted `with_resolved` is what the job
+            // actually went out with, and recomputing cannot reproduce a
+            // per-attempt decision like `reject_rerun`. Same reason `input` is
+            // read back from `input_resolved` rather than re-resolved.
+            let (rebuilt_args, _tool, timeout_seconds) = match build_step_request(
+                step,
+                &ctx,
+                &record.definition,
+                &input,
+                &scheduler.config,
+                false,
+            ) {
+                Ok(x) => x,
+                Err(e) => {
+                    tracing::error!(run_id = %run_id, "reattach request build failed: {e}");
+                    return;
+                }
+            };
+            let mut args = persisted
+                .and_then(|s| s.with_resolved.clone())
+                .unwrap_or(rebuilt_args);
             if let Value::Object(ref mut map) = args {
                 map.insert("step".to_string(), Value::String(step_id.clone()));
                 map.insert(
@@ -1215,6 +1230,7 @@ fn build_step_request(
     flow: &FlowDefinition,
     input: &str,
     config: &SchedulerConfig,
+    reject_rerun: bool,
 ) -> Result<(Value, String, Option<u64>), SchedulerError> {
     match step.kind() {
         Some(StepWith::Cli { with }) => {
@@ -1241,6 +1257,28 @@ fn build_step_request(
             if let Some(model) = &flow.defaults.model {
                 obj.entry("model")
                     .or_insert_with(|| Value::String(model.clone()));
+            }
+            // Arbitrary flow-wide executor args (e.g. agent-flow's
+            // project/feature). Same fill-don't-overwrite rule as the three
+            // above: `with.extra` was already inserted, so a step that sets the
+            // key keeps its own value.
+            for (k, v) in &flow.defaults.extra {
+                obj.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            // The two merges that *overwrite*, and only on the re-run a human
+            // rejection produced. Both must beat `with:` -- the whole point is to
+            // replace what it already said (session fresh -> continue) -- so
+            // `insert`, not `entry().or_insert()`. Final precedence:
+            //   reject_with (step) > executor_reject_args (deployment) > with > defaults
+            if reject_rerun {
+                for (k, v) in &config.executor_reject_args {
+                    obj.insert(k.clone(), v.clone());
+                }
+                if let Some(reject_with) = &step.reject_with {
+                    for (k, v) in reject_with {
+                        obj.insert(k.clone(), v.clone());
+                    }
+                }
             }
             let resolved =
                 flowspec_domain::template::resolve_value(&Value::Object(obj), ctx, &step.id)

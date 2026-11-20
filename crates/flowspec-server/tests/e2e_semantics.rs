@@ -67,6 +67,7 @@ fn scheduler_config(cli_tool: &str) -> SchedulerConfig {
         default_step_timeout_secs: 3600,
         max_step_output_kb: 256,
         executor_cli_tool: cli_tool.to_string(),
+        ..Default::default()
     }
 }
 

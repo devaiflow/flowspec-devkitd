@@ -32,16 +32,27 @@ impl std::fmt::Debug for Secret {
 pub struct ExecutorConfig {
     #[serde(default = "default_cli_tool")]
     pub cli_tool: String,
+    /// Args merged into the re-run a human rejection produces, overriding the
+    /// step's `with:`. Defaults to `{ session: continue }` for devkitd's
+    /// agent-run/agent-flow; set to `{}` to disable, or override per step with
+    /// `reject_with:` in the flow.
+    #[serde(default = "default_reject_args")]
+    pub reject_args: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_cli_tool() -> String {
     "agent-run".to_string()
 }
 
+fn default_reject_args() -> serde_json::Map<String, serde_json::Value> {
+    flowspec_app::ports::default_executor_reject_args()
+}
+
 impl Default for ExecutorConfig {
     fn default() -> Self {
         ExecutorConfig {
             cli_tool: default_cli_tool(),
+            reject_args: default_reject_args(),
         }
     }
 }

@@ -105,6 +105,15 @@ pub struct Step {
     #[serde(default)]
     pub retries: u32,
     pub reject_input: Option<String>,
+    /// Executor arguments merged into the *reject re-run only*, overriding the
+    /// step's own `with:` and any `flow.defaults`. `reject_input` covers what
+    /// changes about the prompt on a reject; this covers what changes about the
+    /// arguments -- the case that motivated it is a human_loop step that runs
+    /// `session: fresh` the first time and `session: continue` once a human has
+    /// rejected it and is replying into the same conversation. Like
+    /// `reject_input`, only meaningful when `on_reject` self-loops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reject_with: Option<IndexMap<String, serde_json::Value>>,
 
     #[serde(default)]
     pub before: Vec<HookCall>,
@@ -153,11 +162,23 @@ pub struct FlowInput {
     pub default: Option<serde_json::Value>,
 }
 
+/// Flow-wide fallbacks merged into every `type: cli` step's args, filling in
+/// only keys the step didn't set itself (`build_step_request`). `extra` carries
+/// arbitrary executor arguments the same way `CliWith::extra` does -- what those
+/// keys mean is the configured `executor.cli_tool`'s business, not flowspec's
+/// (e.g. devkitd's `agent-flow` reads `project`/`feature`). The merge runs
+/// before template resolution, so a default may itself be a template such as
+/// `"{{ inputs.project }}"`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FlowDefaults {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cli: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(flatten)]
+    pub extra: IndexMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

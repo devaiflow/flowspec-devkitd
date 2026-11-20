@@ -311,22 +311,40 @@ pub const PLATFORM_IDEMPOTENCY_PREFIX: &str = "platform:";
 /// field-for-field. Distinct from `StepInfo`: that struct is the MCP host's
 /// ergonomic, output-truncated view; this one is the platform's full replica
 /// projection, pushed verbatim by the connector's pump loop.
+///
+/// Every optional field is `skip_serializing_if` rather than serialized as
+/// `null`: the platform validates with Zod `.optional()`, which admits a
+/// missing key but *rejects* an explicit `null`, so a `None` sent as `null`
+/// 400s the whole state push (`invalid_flow_run`). That failure is not
+/// cosmetic -- `pump::drain_once` deliberately withholds `mark_events_pushed`
+/// when a state push fails, so a schema-level 400 wedges the run's outbox and
+/// the platform UI silently stops updating mid-run.
 #[derive(Debug, Clone, Serialize)]
 pub struct StepRunSnapshot {
     pub step_id: String,
     pub status: String,
     #[serde(rename = "type")]
     pub step_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub with_resolved: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<Timestamp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_resolved: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub child_run_id: Option<String>,
     pub human_loop: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub feedback: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
     pub attempt: u32,
 }
@@ -346,6 +364,7 @@ pub struct FlowRunSnapshot {
     pub phase: String,
     pub active_steps: Vec<String>,
     pub started_at: Timestamp,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<Timestamp>,
     pub steps: Vec<StepRunSnapshot>,
 }
