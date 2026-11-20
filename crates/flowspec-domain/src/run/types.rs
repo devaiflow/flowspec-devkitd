@@ -153,6 +153,13 @@ pub struct StepActivation {
     pub step_id: String,
     pub attempt: u32,
     pub input: String,
+    /// True only for the re-run a human rejection produces (a self-looping
+    /// `on_reject`), false for a first activation and for a `retries:` retry
+    /// after a failure. Carried as data rather than re-derived downstream from
+    /// `approval_status`: the mutation recording the rejection is applied after
+    /// the activation has already been dispatched, so that state reads stale at
+    /// the only moment it would matter.
+    pub reject_rerun: bool,
 }
 
 #[derive(Debug, Clone)]

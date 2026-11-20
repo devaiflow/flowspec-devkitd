@@ -315,6 +315,22 @@ pub struct SchedulerConfig {
     pub max_step_output_kb: u64,
     /// devkitd tool name used for `type: cli` steps.
     pub executor_cli_tool: String,
+    /// Executor args merged into a step's dispatch when it is the re-run a
+    /// human rejection produced, overriding the step's own `with:`. A rejection
+    /// means the human is replying to work the agent just produced, so the
+    /// re-run should continue that conversation rather than start a new one --
+    /// but *how* an executor expresses that is its own vocabulary, so it lives
+    /// here as deployment config rather than in the engine. The default assumes
+    /// devkitd's agent-run/agent-flow, exactly as `executor_cli_tool` does. A
+    /// step's own `reject_with:` still wins over this.
+    pub executor_reject_args: serde_json::Map<String, Value>,
+}
+
+/// `{ "session": "continue" }` -- see `SchedulerConfig::executor_reject_args`.
+pub fn default_executor_reject_args() -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    m.insert("session".to_string(), Value::String("continue".to_string()));
+    m
 }
 
 impl Default for SchedulerConfig {
@@ -325,6 +341,7 @@ impl Default for SchedulerConfig {
             default_step_timeout_secs: 3600,
             max_step_output_kb: 256,
             executor_cli_tool: "agent-run".to_string(),
+            executor_reject_args: default_executor_reject_args(),
         }
     }
 }

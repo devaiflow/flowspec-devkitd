@@ -1,1 +1,4 @@
 /target
+flowspec.db
+flowspec.db-shm
+flowspec.db-wal

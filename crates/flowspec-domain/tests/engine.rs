@@ -197,6 +197,11 @@ fn retries_reactivate_before_on_failure_routes() {
             assert_eq!(activations.len(), 1);
             assert_eq!(activations[0].step_id, "implement");
             assert_eq!(activations[0].attempt, 2);
+            assert!(
+                !activations[0].reject_rerun,
+                "a failure retry is not a reject re-run: the job died, so there is no \
+                 conversation to resume"
+            );
         }
         other => panic!("expected a single retry activation, got {other:?}"),
     }
@@ -277,6 +282,11 @@ fn approval_routes_on_approve_and_rejection_self_loops_with_feedback() {
             assert_eq!(activations[0].step_id, "plan");
             assert_eq!(activations[0].attempt, 2);
             assert!(activations[0].input.contains("Feedback: missing edge case"));
+            assert!(
+                activations[0].reject_rerun,
+                "a self-looping rejection is the one activation that resumes the \
+                 conversation the human is replying to"
+            );
         }
         other => panic!("expected mark + self-loop reactivation, got {other:?}"),
     }

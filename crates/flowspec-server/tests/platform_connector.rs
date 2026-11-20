@@ -299,6 +299,7 @@ fn scheduler_config() -> SchedulerConfig {
         default_step_timeout_secs: 3600,
         max_step_output_kb: 256,
         executor_cli_tool: "agent-run".to_string(),
+        ..Default::default()
     }
 }
 

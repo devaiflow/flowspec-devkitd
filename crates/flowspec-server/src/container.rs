@@ -46,6 +46,7 @@ impl Container {
             default_step_timeout_secs: config.default_step_timeout_secs,
             max_step_output_kb: config.max_step_output_kb,
             executor_cli_tool: config.executor.cli_tool.clone(),
+            executor_reject_args: config.executor.reject_args.clone(),
         };
         let scheduler = Arc::new(Scheduler::new(
             state_store.clone(),

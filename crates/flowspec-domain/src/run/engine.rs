@@ -110,6 +110,7 @@ fn activate_targets(
                     step_id: step.id.clone(),
                     attempt,
                     input,
+                    reject_rerun: false,
                 }]));
             }
         }
@@ -299,6 +300,8 @@ fn on_step_failed(
                     step_id: step_id.to_string(),
                     attempt: attempt + 1,
                     input,
+                    // A failed job has no conversation worth resuming.
+                    reject_rerun: false,
                 }]));
             }
         }
@@ -410,6 +413,7 @@ fn on_step_rejected(
                     step_id: step_id.to_string(),
                     attempt,
                     input,
+                    reject_rerun: true,
                 }]));
             }
         }
